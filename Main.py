@@ -218,6 +218,8 @@ def auto_fix_windows(log_callback):
     fixes = [
         {
             "name": "Disable Nagle Algorithm (TCP latency)",
+            "impact": "Reduces delayed ACK behavior that can add ping spikes in online games.",
+            "kind": "powershell",
             "cmd": (
                 "$adapters = Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces'; "
                 "foreach ($a in $adapters) { "
@@ -228,10 +230,14 @@ def auto_fix_windows(log_callback):
         },
         {
             "name": "Set High Performance power plan",
+            "impact": "Prevents aggressive power saving that causes frame drops and packet delay.",
+            "kind": "shell",
             "cmd": "powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
         },
         {
             "name": "Set DNS to Cloudflare 1.1.1.1",
+            "impact": "Speeds up DNS lookups and can reduce matchmaking/server lookup delay.",
+            "kind": "powershell",
             "cmd": (
                 "$iface = (Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -First 1).Name; "
                 "Set-DnsClientServerAddress -InterfaceAlias $iface -ServerAddresses ('1.1.1.1','1.0.0.1')"
@@ -239,10 +245,14 @@ def auto_fix_windows(log_callback):
         },
         {
             "name": "Flush DNS cache",
+            "impact": "Clears stale DNS entries that can route you to slower endpoints.",
+            "kind": "powershell",
             "cmd": "Clear-DnsClientCache"
         },
         {
             "name": "Disable Windows Update delivery optimization (bandwidth hog)",
+            "impact": "Stops background peer delivery traffic from stealing game bandwidth.",
+            "kind": "powershell",
             "cmd": (
                 "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\DeliveryOptimization\\Config' "
                 "-Name 'DODownloadMode' -Value 0 -Type DWord -Force -EA SilentlyContinue"
@@ -250,6 +260,8 @@ def auto_fix_windows(log_callback):
         },
         {
             "name": "Prioritize network for foreground apps",
+            "impact": "Reduces Windows network throttling so active games get priority.",
+            "kind": "powershell",
             "cmd": (
                 "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile' "
                 "-Name 'NetworkThrottlingIndex' -Value 0xffffffff -Type DWord -Force -EA SilentlyContinue"
@@ -257,28 +269,14 @@ def auto_fix_windows(log_callback):
         },
         {
             "name": "Disable auto-tuning (can cause instability on some routers)",
+            "impact": "Stabilizes TCP behavior on routers that perform poorly with autotuning.",
+            "kind": "shell",
             "cmd": "netsh int tcp set global autotuninglevel=disabled"
         },
     ]
 
     for fix in fixes:
-        log_callback(f"  → {fix['name']}...")
-        try:
-            if fix["cmd"].startswith("netsh") or fix["cmd"].startswith("powercfg"):
-                result = subprocess.run(
-                    fix["cmd"], shell=True, capture_output=True, text=True, timeout=15
-                )
-            else:
-                result = subprocess.run(
-                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", fix["cmd"]],
-                    capture_output=True, text=True, timeout=20
-                )
-            if result.returncode == 0:
-                log_callback(f"     ✓ Done")
-            else:
-                log_callback(f"     ✗ Failed (may need admin): {result.stderr.strip()[:80]}")
-        except Exception as e:
-            log_callback(f"     ✗ Error: {e}")
+        run_windows_tweak(fix, log_callback)
 
     log_callback("\n[✓] Auto-fix complete. Restart recommended.")
 
@@ -286,11 +284,13 @@ def auto_fix_windows(log_callback):
 FPS_TWEAKS = [
     {
         "name": "Set Ultimate/High performance power plan",
+        "impact": "Forces maximum CPU/GPU power states for higher and more stable FPS.",
         "cmd": "powercfg /setactive e9a42b02-d5df-448d-aa00-03f14749eb61 || powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
         "kind": "shell",
     },
     {
         "name": "Disable Xbox Game DVR background capture",
+        "impact": "Removes hidden recording overhead that can cause frame-time stutter.",
         "cmd": (
             "Set-ItemProperty -Path 'HKCU:\\System\\GameConfigStore' -Name 'GameDVR_Enabled' -Value 0 -Type DWord -Force -EA SilentlyContinue; "
             "Set-ItemProperty -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR' -Name 'AppCaptureEnabled' -Value 0 -Type DWord -Force -EA SilentlyContinue"
@@ -299,6 +299,7 @@ FPS_TWEAKS = [
     },
     {
         "name": "Enable Windows Game Mode",
+        "impact": "Prioritizes game resources over background processes.",
         "cmd": "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\GameBar' -Name 'AutoGameModeEnabled' -Value 1 -Type DWord -Force -EA SilentlyContinue",
         "kind": "powershell",
     },
@@ -307,11 +308,13 @@ FPS_TWEAKS = [
 GPU_TWEAKS = [
     {
         "name": "Enable Hardware-Accelerated GPU Scheduling",
+        "impact": "Reduces GPU scheduling latency on supported hardware.",
         "cmd": "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -Type DWord -Force -EA SilentlyContinue",
         "kind": "powershell",
     },
     {
         "name": "Prioritize Games task for GPU scheduling",
+        "impact": "Gives game workloads higher GPU task priority than background apps.",
         "cmd": (
             "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games' "
             "-Name 'GPU Priority' -Value 8 -Type DWord -Force -EA SilentlyContinue; "
@@ -325,30 +328,85 @@ GPU_TWEAKS = [
 CPU_TWEAKS = [
     {
         "name": "Favor foreground app scheduling",
+        "impact": "Pushes CPU scheduler focus to the active game window.",
         "cmd": "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38 -Type DWord -Force -EA SilentlyContinue",
         "kind": "powershell",
     },
     {
         "name": "Disable CPU power throttling",
+        "impact": "Prevents Windows from downclocking CPU during gameplay.",
         "cmd": "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power\\PowerThrottling' -Name 'PowerThrottlingOff' -Value 1 -Type DWord -Force -EA SilentlyContinue",
         "kind": "powershell",
     },
     {
         "name": "Set CPU minimum processor state to 100%",
+        "impact": "Keeps CPU from dropping below full-performance state on AC power.",
         "cmd": "powercfg /setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100",
         "kind": "shell",
     },
     {
         "name": "Set CPU maximum processor state to 100%",
+        "impact": "Prevents capped turbo/boost behavior caused by lower max processor state.",
         "cmd": "powercfg /setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100",
         "kind": "shell",
     },
     {
         "name": "Apply active power scheme updates",
+        "impact": "Commits processor power-state settings immediately.",
         "cmd": "powercfg /setactive scheme_current",
         "kind": "shell",
     },
 ]
+
+FORTNITE_FULL_TWEAKS = [
+    {
+        "name": "Set Games scheduling category to High",
+        "impact": "Moves game threads ahead of most background workloads for better frame pacing.",
+        "cmd": (
+            "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games' "
+            "-Name 'Scheduling Category' -Value 'High' -Type String -Force -EA SilentlyContinue; "
+            "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games' "
+            "-Name 'SFIO Priority' -Value 'High' -Type String -Force -EA SilentlyContinue"
+        ),
+        "kind": "powershell",
+    },
+    {
+        "name": "Force Fortnite process priority defaults",
+        "impact": "Sets Fortnite's default process class to high priority when launched.",
+        "cmd": (
+            "New-Item -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\FortniteClient-Win64-Shipping.exe\\PerfOptions' "
+            "-Force -EA SilentlyContinue | Out-Null; "
+            "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\FortniteClient-Win64-Shipping.exe\\PerfOptions' "
+            "-Name 'CpuPriorityClass' -Value 3 -Type DWord -Force -EA SilentlyContinue; "
+            "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\FortniteClient-Win64-Shipping.exe\\PerfOptions' "
+            "-Name 'IoPriority' -Value 3 -Type DWord -Force -EA SilentlyContinue"
+        ),
+        "kind": "powershell",
+    },
+]
+
+
+def run_windows_tweak(tweak, log_callback):
+    log_callback(f"  → {tweak['name']}...")
+    if tweak.get("impact"):
+        log_callback(f"     Fixes: {tweak['impact']}")
+    try:
+        if tweak.get("kind") == "shell":
+            result = subprocess.run(
+                ["cmd", "/c", tweak["cmd"]], capture_output=True, text=True, timeout=20
+            )
+        else:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", tweak["cmd"]],
+                capture_output=True, text=True, timeout=20
+            )
+        if result.returncode == 0:
+            log_callback("     ✓ Applied")
+        else:
+            err = (result.stderr or result.stdout or "No output").strip().replace("\n", " ")[:180]
+            log_callback(f"     ✗ Failed (usually needs admin): {err}")
+    except Exception as e:
+        log_callback(f"     ✗ Error: {e}")
 
 
 def apply_windows_tweaks(profile_name, tweaks, log_callback):
@@ -358,24 +416,7 @@ def apply_windows_tweaks(profile_name, tweaks, log_callback):
 
     log_callback(f"[{profile_name}] Applying {len(tweaks)} tweaks...")
     for tweak in tweaks:
-        log_callback(f"  → {tweak['name']}...")
-        try:
-            if tweak.get("kind") == "powershell":
-                result = subprocess.run(
-                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", tweak["cmd"]],
-                    capture_output=True, text=True, timeout=20
-                )
-            else:
-                result = subprocess.run(
-                    tweak["cmd"], shell=True, capture_output=True, text=True, timeout=20
-                )
-            if result.returncode == 0:
-                log_callback("     ✓ Done")
-            else:
-                err = (result.stderr or result.stdout or "").strip()[:120]
-                log_callback(f"     ✗ Failed (may need admin): {err}")
-        except Exception as e:
-            log_callback(f"     ✗ Error: {e}")
+        run_windows_tweak(tweak, log_callback)
     log_callback(f"[✓] {profile_name} tweaks complete.\n")
 
 
@@ -1098,20 +1139,34 @@ def _build_fps_page(self):
 
     tabs = ctk.CTkTabview(page, fg_color=BG_CARD, segmented_button_fg_color=BG_PANEL)
     tabs.pack(fill="x", pady=(0, 12))
-    for tab_name in ("FPS", "GPU", "CPU", "Auto Fix Full"):
+    for tab_name in ("FPS", "GPU", "CPU", "Fortnite Full HP", "Auto Fix Full"):
         tabs.add(tab_name)
 
     tab_data = [
         ("FPS", "Boost general frame stability and disable capture overhead.", "Apply FPS Tweaks", "fps"),
         ("GPU", "Apply GPU scheduler and game task priority optimizations.", "Apply GPU Tweaks", "gpu"),
         ("CPU", "Force high-performance CPU scheduling and processor states.", "Apply CPU Tweaks", "cpu"),
+        ("Fortnite Full HP", "One-click full high-performance mode for Fortnite (FPS + ping + scheduler + priority).", "Apply Fortnite Full High Performance", "fortnite"),
         ("Auto Fix Full", "Apply every FPS/GPU/CPU tweak plus network auto-fixes.", "Apply Full Optimization", "full"),
     ]
+    tweak_explanations = {
+        "fps": FPS_TWEAKS,
+        "gpu": GPU_TWEAKS,
+        "cpu": CPU_TWEAKS,
+        "fortnite": FORTNITE_FULL_TWEAKS,
+    }
     for tab_name, desc, btn_text, profile in tab_data:
         tab = tabs.tab(tab_name)
         ctk.CTkLabel(
             tab, text=desc, text_color=TEXT_DIM, justify="left", wraplength=620
         ).pack(anchor="w", padx=14, pady=(10, 6))
+        if profile in tweak_explanations:
+            details = "\n".join(
+                f"• {t['name']} — {t['impact']}" for t in tweak_explanations[profile]
+            )
+            ctk.CTkLabel(
+                tab, text=details, text_color=TEXT_DIM, justify="left", wraplength=620
+            ).pack(anchor="w", padx=14, pady=(0, 8))
         ctk.CTkButton(
             tab, text=btn_text, width=220,
             fg_color=ACCENT, text_color="black", hover_color="#81D4FA",
@@ -1174,6 +1229,13 @@ def _run_fps_profile(self, profile):
         apply_windows_tweaks("GPU", GPU_TWEAKS, self._fps_log_write)
     elif profile == "cpu":
         apply_windows_tweaks("CPU", CPU_TWEAKS, self._fps_log_write)
+    elif profile == "fortnite":
+        apply_windows_tweaks("FPS", FPS_TWEAKS, self._fps_log_write)
+        apply_windows_tweaks("GPU", GPU_TWEAKS, self._fps_log_write)
+        apply_windows_tweaks("CPU", CPU_TWEAKS, self._fps_log_write)
+        auto_fix_windows(self._fps_log_write)
+        apply_windows_tweaks("Fortnite Full High Performance", FORTNITE_FULL_TWEAKS, self._fps_log_write)
+        self._fps_log_write("[✓] Fortnite Full High Performance complete. Restart and launch Fortnite.")
     else:
         apply_windows_tweaks("FPS", FPS_TWEAKS, self._fps_log_write)
         apply_windows_tweaks("GPU", GPU_TWEAKS, self._fps_log_write)
