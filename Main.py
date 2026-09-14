@@ -11,6 +11,7 @@ import time
 import json
 import os
 import sys
+import random
 import psutil
 import speedtest
 from datetime import datetime
@@ -280,6 +281,102 @@ def auto_fix_windows(log_callback):
             log_callback(f"     ✗ Error: {e}")
 
     log_callback("\n[✓] Auto-fix complete. Restart recommended.")
+
+
+FPS_TWEAKS = [
+    {
+        "name": "Set Ultimate/High performance power plan",
+        "cmd": "powercfg /setactive e9a42b02-d5df-448d-aa00-03f14749eb61 || powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+        "kind": "shell",
+    },
+    {
+        "name": "Disable Xbox Game DVR background capture",
+        "cmd": (
+            "Set-ItemProperty -Path 'HKCU:\\System\\GameConfigStore' -Name 'GameDVR_Enabled' -Value 0 -Type DWord -Force -EA SilentlyContinue; "
+            "Set-ItemProperty -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR' -Name 'AppCaptureEnabled' -Value 0 -Type DWord -Force -EA SilentlyContinue"
+        ),
+        "kind": "powershell",
+    },
+    {
+        "name": "Enable Windows Game Mode",
+        "cmd": "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\GameBar' -Name 'AutoGameModeEnabled' -Value 1 -Type DWord -Force -EA SilentlyContinue",
+        "kind": "powershell",
+    },
+]
+
+GPU_TWEAKS = [
+    {
+        "name": "Enable Hardware-Accelerated GPU Scheduling",
+        "cmd": "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers' -Name 'HwSchMode' -Value 2 -Type DWord -Force -EA SilentlyContinue",
+        "kind": "powershell",
+    },
+    {
+        "name": "Prioritize Games task for GPU scheduling",
+        "cmd": (
+            "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games' "
+            "-Name 'GPU Priority' -Value 8 -Type DWord -Force -EA SilentlyContinue; "
+            "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games' "
+            "-Name 'Priority' -Value 6 -Type DWord -Force -EA SilentlyContinue"
+        ),
+        "kind": "powershell",
+    },
+]
+
+CPU_TWEAKS = [
+    {
+        "name": "Favor foreground app scheduling",
+        "cmd": "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl' -Name 'Win32PrioritySeparation' -Value 38 -Type DWord -Force -EA SilentlyContinue",
+        "kind": "powershell",
+    },
+    {
+        "name": "Disable CPU power throttling",
+        "cmd": "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power\\PowerThrottling' -Name 'PowerThrottlingOff' -Value 1 -Type DWord -Force -EA SilentlyContinue",
+        "kind": "powershell",
+    },
+    {
+        "name": "Set CPU minimum processor state to 100%",
+        "cmd": "powercfg /setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100",
+        "kind": "shell",
+    },
+    {
+        "name": "Set CPU maximum processor state to 100%",
+        "cmd": "powercfg /setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100",
+        "kind": "shell",
+    },
+    {
+        "name": "Apply active power scheme updates",
+        "cmd": "powercfg /setactive scheme_current",
+        "kind": "shell",
+    },
+]
+
+
+def apply_windows_tweaks(profile_name, tweaks, log_callback):
+    if platform.system() != "Windows":
+        log_callback(f"[!] {profile_name} tweaks are Windows-only.")
+        return
+
+    log_callback(f"[{profile_name}] Applying {len(tweaks)} tweaks...")
+    for tweak in tweaks:
+        log_callback(f"  → {tweak['name']}...")
+        try:
+            if tweak.get("kind") == "powershell":
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", tweak["cmd"]],
+                    capture_output=True, text=True, timeout=20
+                )
+            else:
+                result = subprocess.run(
+                    tweak["cmd"], shell=True, capture_output=True, text=True, timeout=20
+                )
+            if result.returncode == 0:
+                log_callback("     ✓ Done")
+            else:
+                err = (result.stderr or result.stdout or "").strip()[:120]
+                log_callback(f"     ✗ Failed (may need admin): {err}")
+        except Exception as e:
+            log_callback(f"     ✗ Error: {e}")
+    log_callback(f"[✓] {profile_name} tweaks complete.\n")
 
 
 # ─── UI ───────────────────────────────────────────────────────────────────────
@@ -864,6 +961,7 @@ def _patched_build_ui(self):
         ("⚡  Speed Test",  "speed"),
         ("🔍  Lag Scanner", "scan"),
         ("🔧  Auto Fix",    "fix"),
+        ("🚀  FPS Boost",   "fps"),
         ("🎮  Game Mode",   "game"),
     ]
     for label, key in pages:
@@ -890,6 +988,7 @@ def _patched_build_ui(self):
     self.pages["speed"] = self._build_speed_page()
     self.pages["scan"]  = self._build_scan_page()
     self.pages["fix"]   = self._build_fix_page()
+    self.pages["fps"]   = self._build_fps_page()
     self.pages["game"]  = self._build_game_page()
     self._show_page("wifi")
 
@@ -986,10 +1085,202 @@ def _stop_game_mode(self):
     self._gm_stop_btn.configure(state="disabled")
 
 
+def _build_fps_page(self):
+    page = ctk.CTkFrame(self.content, fg_color="transparent")
+
+    ctk.CTkLabel(page, text="🚀  FPS Boost Center",
+                 font=ctk.CTkFont(size=22, weight="bold")).pack(anchor="w")
+    ctk.CTkLabel(
+        page,
+        text="Use these optimization tabs to tune FPS, GPU, CPU, or run full auto-fix in one click.",
+        text_color=TEXT_DIM, font=ctk.CTkFont(size=12), wraplength=680, justify="left"
+    ).pack(anchor="w", pady=(2, 10))
+
+    tabs = ctk.CTkTabview(page, fg_color=BG_CARD, segmented_button_fg_color=BG_PANEL)
+    tabs.pack(fill="x", pady=(0, 12))
+    for tab_name in ("FPS", "GPU", "CPU", "Auto Fix Full"):
+        tabs.add(tab_name)
+
+    tab_data = [
+        ("FPS", "Boost general frame stability and disable capture overhead.", "Apply FPS Tweaks", "fps"),
+        ("GPU", "Apply GPU scheduler and game task priority optimizations.", "Apply GPU Tweaks", "gpu"),
+        ("CPU", "Force high-performance CPU scheduling and processor states.", "Apply CPU Tweaks", "cpu"),
+        ("Auto Fix Full", "Apply every FPS/GPU/CPU tweak plus network auto-fixes.", "Apply Full Optimization", "full"),
+    ]
+    for tab_name, desc, btn_text, profile in tab_data:
+        tab = tabs.tab(tab_name)
+        ctk.CTkLabel(
+            tab, text=desc, text_color=TEXT_DIM, justify="left", wraplength=620
+        ).pack(anchor="w", padx=14, pady=(10, 6))
+        ctk.CTkButton(
+            tab, text=btn_text, width=220,
+            fg_color=ACCENT, text_color="black", hover_color="#81D4FA",
+            command=lambda p=profile: self._run_fps_profile(p)
+        ).pack(anchor="w", padx=14, pady=(0, 10))
+
+    tester_card = self._card(page, "FPS TESTER")
+    tester_card.pack(fill="both", expand=True)
+
+    self._fps_value_var = ctk.StringVar(value="—")
+    self._fps_status_var = ctk.StringVar(value="Idle")
+    self._fps_duration_var = ctk.StringVar(value="10")
+
+    top = ctk.CTkFrame(tester_card, fg_color="transparent")
+    top.pack(fill="x", padx=14, pady=(4, 8))
+    ctk.CTkLabel(top, text="Duration (sec):", text_color=TEXT_DIM).pack(side="left")
+    ctk.CTkEntry(top, width=70, textvariable=self._fps_duration_var).pack(side="left", padx=(8, 12))
+    ctk.CTkButton(top, text="Start FPS Test", width=140, command=self._start_fps_test).pack(side="left")
+    ctk.CTkButton(top, text="Stop", width=90, fg_color=BG_PANEL, hover_color=BG_CARD,
+                  command=self._stop_fps_test).pack(side="left", padx=(8, 0))
+    ctk.CTkLabel(top, textvariable=self._fps_status_var, text_color=ACCENT).pack(side="right")
+
+    stats = ctk.CTkFrame(tester_card, fg_color="transparent")
+    stats.pack(fill="x", padx=14, pady=(0, 8))
+    ctk.CTkLabel(stats, text="Measured FPS:", text_color=TEXT_DIM).pack(side="left")
+    ctk.CTkLabel(stats, textvariable=self._fps_value_var,
+                 font=ctk.CTkFont(size=15, weight="bold")).pack(side="left", padx=(8, 0))
+
+    self._fps_canvas = ctk.CTkCanvas(tester_card, bg="#0F0F0F", highlightthickness=0, height=180)
+    self._fps_canvas.pack(fill="x", padx=14, pady=(0, 10))
+
+    self._fps_log = ctk.CTkTextbox(
+        tester_card, fg_color=BG_PANEL, text_color="white",
+        font=ctk.CTkFont(family="Courier", size=11), height=130, state="disabled"
+    )
+    self._fps_log.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+
+    self._fps_test_running = False
+    self._fps_particles = []
+    self._fps_samples = []
+    self._fps_last_ts = 0
+    self._fps_frames = 0
+    self._fps_test_seconds = 10
+    self._fps_test_start_ts = 0
+    return page
+
+
+def _fps_log_write(self, text):
+    self._fps_log.configure(state="normal")
+    self._fps_log.insert("end", text + "\n")
+    self._fps_log.see("end")
+    self._fps_log.configure(state="disabled")
+
+
+def _run_fps_profile(self, profile):
+    self._fps_log_write(f"[FPS Boost] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if profile == "fps":
+        apply_windows_tweaks("FPS", FPS_TWEAKS, self._fps_log_write)
+    elif profile == "gpu":
+        apply_windows_tweaks("GPU", GPU_TWEAKS, self._fps_log_write)
+    elif profile == "cpu":
+        apply_windows_tweaks("CPU", CPU_TWEAKS, self._fps_log_write)
+    else:
+        apply_windows_tweaks("FPS", FPS_TWEAKS, self._fps_log_write)
+        apply_windows_tweaks("GPU", GPU_TWEAKS, self._fps_log_write)
+        apply_windows_tweaks("CPU", CPU_TWEAKS, self._fps_log_write)
+        auto_fix_windows(self._fps_log_write)
+        self._fps_log_write("[✓] Auto Fix Full complete. Restart recommended.")
+
+
+def _start_fps_test(self):
+    if self._fps_test_running:
+        return
+
+    try:
+        seconds = int(self._fps_duration_var.get().strip())
+    except Exception:
+        seconds = 10
+    self._fps_test_seconds = max(5, min(seconds, 120))
+
+    self._fps_canvas.delete("all")
+    self._fps_particles = []
+    width = max(self._fps_canvas.winfo_width(), 400)
+    height = max(self._fps_canvas.winfo_height(), 180)
+    for _ in range(120):
+        x = random.randint(8, width - 8)
+        y = random.randint(8, height - 8)
+        size = random.randint(2, 5)
+        dot = self._fps_canvas.create_oval(x, y, x + size, y + size, fill=ACCENT, outline="")
+        dx = random.choice([-1, 1]) * random.uniform(1.2, 3.2)
+        dy = random.choice([-1, 1]) * random.uniform(1.2, 3.2)
+        self._fps_particles.append([dot, dx, dy, size])
+
+    self._fps_test_running = True
+    self._fps_samples = []
+    self._fps_frames = 0
+    self._fps_last_ts = time.perf_counter()
+    self._fps_test_start_ts = self._fps_last_ts
+    self._fps_status_var.set("Running")
+    self._fps_log_write(f"[FPS Test] Running {self._fps_test_seconds}s stress test...")
+    self._fps_test_step()
+
+
+def _fps_test_step(self):
+    if not self._fps_test_running:
+        return
+
+    now = time.perf_counter()
+    dt = now - self._fps_last_ts
+    self._fps_last_ts = now
+    self._fps_frames += 1
+    if dt > 0:
+        self._fps_samples.append(1.0 / dt)
+
+    width = max(self._fps_canvas.winfo_width(), 400)
+    height = max(self._fps_canvas.winfo_height(), 180)
+    for item in self._fps_particles:
+        dot, dx, dy, size = item
+        x1, y1, x2, y2 = self._fps_canvas.coords(dot)
+        if x1 <= 0 or x2 >= width:
+            item[1] = -dx
+            dx = item[1]
+        if y1 <= 0 or y2 >= height:
+            item[2] = -dy
+            dy = item[2]
+        self._fps_canvas.move(dot, dx, dy)
+
+    elapsed = now - self._fps_test_start_ts
+    if elapsed >= self._fps_test_seconds:
+        self._stop_fps_test(finalize=True)
+        return
+
+    if self._fps_samples:
+        self._fps_value_var.set(f"{self._fps_samples[-1]:.1f}")
+    self.after(1, self._fps_test_step)
+
+
+def _stop_fps_test(self, finalize=False):
+    if not self._fps_test_running and not finalize:
+        return
+
+    self._fps_test_running = False
+    elapsed = max(time.perf_counter() - self._fps_test_start_ts, 0.001)
+    avg_fps = self._fps_frames / elapsed
+
+    if self._fps_samples:
+        peak = max(self._fps_samples)
+        low = min(self._fps_samples)
+        self._fps_value_var.set(f"{avg_fps:.1f}")
+        self._fps_log_write(
+            f"[FPS Test] Avg: {avg_fps:.1f} | Peak: {peak:.1f} | Low: {low:.1f} | Duration: {elapsed:.1f}s"
+        )
+    else:
+        self._fps_value_var.set("0")
+        self._fps_log_write("[FPS Test] No samples captured.")
+
+    self._fps_status_var.set("Idle")
+
+
 BPingApp._build_game_page = _build_game_page
 BPingApp._gm_log_write    = _gm_log_write
 BPingApp._start_game_mode = _start_game_mode
 BPingApp._stop_game_mode  = _stop_game_mode
+BPingApp._build_fps_page  = _build_fps_page
+BPingApp._fps_log_write   = _fps_log_write
+BPingApp._run_fps_profile = _run_fps_profile
+BPingApp._start_fps_test  = _start_fps_test
+BPingApp._fps_test_step   = _fps_test_step
+BPingApp._stop_fps_test   = _stop_fps_test
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
